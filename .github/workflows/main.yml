@@ -1,0 +1,190 @@
+name: Leapwork Action
+
+on:
+  schedule:
+    - cron: '0 4 * * 2'
+
+  workflow_dispatch:
+ 
+
+jobs:
+  build:
+  
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      - name: Run Leapwork Automated Test flows for multiple schedules
+        shell: pwsh 
+        run: |
+          # Define headers
+          $headers = @{
+            "AccessKey" = "${{ secrets.ACCESS_KEY }}"
+          }
+          # Fetch schedule IDs from the API
+          $scheduleApiUrl = "${{ vars.BASE_URL }}/api/v4/schedules"
+          $schedulesResponse = Invoke-RestMethod -Uri $scheduleApiUrl -Method Get -Headers $headers -ContentType "application/json"
+          $scheduleIds = $schedulesResponse | ForEach-Object { $_.Id }
+          # Initialize a hashtable to store cumulative results
+          $results = @{}
+          foreach ($scheduleId in $scheduleIds) {
+            Write-Output "Processing Schedule ID: $scheduleId"
+            # Define API URL for starting schedule
+            $url = "${{ vars.BASE_URL }}/api/v4/schedules/$scheduleId/runNow"
+            try {
+                # Make PUT request to start schedule
+                $response = Invoke-RestMethod -Uri $url -Method PUT -Headers $headers -ContentType "application/json" -ErrorAction Stop
+              
+                # Check if starting schedule was successful
+                if (($null -ne $response)) {
+                    $jsonResponse = $response | ConvertTo-Json -Depth 10
+                   
+                    $runId = $response.RunId
+                    Write-Output "runId: $runId"
+                    # Initialize variables
+                    $isStillRunning = $true
+                    $runItemsId = @()
+                    $runItemsDetails = @()
+                    do {
+                        # Simulate waiting
+                        Start-Sleep -Seconds ${{ vars.TIME_DELAY }}
+                        # Make API call to retrieve executedRunItems
+                        $executedRunItems = Invoke-RestMethod -Uri "${{ vars.BASE_URL }}/api/v4/run/$runId/runItemIds" -Method Get -Headers $headers -ContentType "application/json"
+        
+                        # Filter out already processed runItems
+                        $executedRunItems.RunItemIds = [string[]]$executedRunItems.RunItemIds
+                        $newExecutedRunItems = $executedRunItems.RunItemIds | Where-Object { $_ -notin $runItemsId }
+                        Write-Output "NewExecutedRunItems: $($newExecutedRunItems | ConvertTo-Json -Depth 10)"
+                        foreach ($runItemId in $newExecutedRunItems) {
+                            # Make API call to get runItem details
+                            $runItem = Invoke-RestMethod -Uri "${{ vars.BASE_URL }}/api/v4/runItems/$runItemId" -Method Get -Headers $headers -ContentType "application/json"
+                            $status = $runItem.Status
+                            $flowTitle = $runItem.FlowInfo.FlowTitle
+                            Write-Output "Status: $status"
+                            Write-Output "Flow Title: $flowTitle"
+                            # Handle different statuses
+                           switch ($runItem.Status) {
+                              "NoStatus" {
+                                  # Remove runItemId from the list
+                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
+                              }
+                              "Initializing" {
+                                  # Remove runItemId from the list
+                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
+                              }
+                              "Connecting" {
+                                  # Remove runItemId from the list
+                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
+                              }
+                              "Connected" {
+                                  # Remove runItemId from the list
+                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
+                              }
+                              "Running" {
+                                  # Remove runItemId from the list
+                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
+                              }
+                              "IsProcessing" {
+                                  # Remove runItemId from the list
+                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
+                              }
+                              "Passed" {
+                                  Write-Output "Status of runItem $($runItemId): Passed"
+                                  $passedCount++
+                              }
+                              "Failed" {
+                                  Write-Output "Status of runItem $($runItemId): Failed"
+                                  $failedCount++
+                              }
+                              "Error" {
+                                  Write-Output "Status of runItem $($runItemId): Error"
+                                  $errorCount++
+                              }
+                              "Inconclusive" {
+                                  Write-Output "Status of runItem $($runItemId): Inconclusive"
+                                  $errorCount++
+                              }
+                              "Timeout" {
+                                  Write-Output "Status of runItem $($runItemId): Timeout"
+                                  $errorCount++
+                              }
+                              "Cancelled" {
+                                  Write-Output "Status of runItem $($runItemId): Cancelled"
+                                  $errorCount++
+                              }
+                              "Done" {
+                                  Write-Output "Status of runItem $($runItemId): Done"
+                                  # Determine if Done status should be considered Passed or Failed
+                                  if (${{ vars.ISDONESTATUSASSUCCESS }}) {
+                                      $passedCount++
+                                  } else {
+                                      $failedCount++
+                                  }
+                              }
+                              default {
+                                  Write-Output "Unhandled status: $($runItem.Status)"
+                              }
+                          }
+                            # Add runItem details to the list
+                            $runItemsDetails += [pscustomobject]@{
+                                'RunItemId' = $runItemId
+                                'FlowTitle' = $flowTitle
+                                'Status' = $status
+                            }
+                            # Add runItemId to processed list
+                            $runItemsId += $runItemId
+                            
+                        }
+                        # Check if the runStatus is Finished
+                        $runStatus = Invoke-RestMethod -Uri "${{ vars.BASE_URL }}/api/v4/run/$runId/status" -Method Get -Headers $headers -ContentType "application/json"
+          
+                        if ($($runStatus.Status) -eq "Finished") {
+                            # Check if all runItems have been processed
+                            $allExecutedRunItems = Invoke-RestMethod -Uri "${{ vars.BASE_URL }}/api/v4/run/$runId/runItemIds" -Method Get -Headers $headers -ContentType "application/json"
+                            Write-Output "Processed Run Items Count: $($runItemsId.Count)"
+                            if ($allExecutedRunItems.RunItemIds.Count -gt 0 -and $allExecutedRunItems.RunItemIds.Count -le $runItemsId.Count) {
+                                $isStillRunning = $false
+                            }
+                        }
+                        if ($isStillRunning) {
+                            Write-Output "The schedule status is already '$runStatus' - wait a minute..."
+                        }
+                    } while ($isStillRunning)
+                    # Process results for current schedule
+                    $groupedRunItems = $runItemsDetails | Group-Object -Property FlowTitle
+                    foreach ($group in $groupedRunItems) {
+                        $flowTitle = $group.Name
+                        $passedCount = ($group.Group | Where-Object { $_.Status -eq 'Passed' }).Count
+                        $failedCount = ($group.Group | Where-Object { $_.Status -eq 'Failed' }).Count
+                        if (-not $results.ContainsKey($flowTitle)) {
+                            $results[$flowTitle] = [pscustomobject]@{
+                                'FlowTitle' = $flowTitle
+                                'PassedCount' = 0
+                                'FailedCount' = 0
+                            }
+                        }
+                        $results[$flowTitle].PassedCount += $passedCount
+                        $results[$flowTitle].FailedCount += $failedCount
+                    }
+                } else {
+                    Write-Error "Failed to start schedule. HTTP status code: $($response.StatusCode)"
+                    exit 1
+                }
+            } catch {
+                Write-Error "Error occurred: $_"
+                exit 1
+            }
+          }
+          # Prepare CSV content
+          $csvContent = "Flow Title,Passed Count,Failed Count"
+          foreach ($result in $results.Values) {
+              $csvContent += "`n$($result.FlowTitle),$($result.PassedCount),$($result.FailedCount)"
+          }
+          # Save CSV content to a file
+          $csvContent | Out-File -FilePath output.csv -Encoding utf8
+          Write-Output "Results saved to output.csv"
+      - name: Upload output file
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-csv
+          path: output.csv
