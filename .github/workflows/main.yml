@@ -77,6 +77,7 @@ jobs:
 
           # Fetch schedule IDs from the API
           $scheduleApiUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/schedules"
+          Write-Output "Schedules URL: $scheduleApiUrl"
           $schedulesResponse = Invoke-RestMethod -Uri $scheduleApiUrl -Method Get -Headers $headers -ContentType "application/json"
           $scheduleIds = $schedulesResponse | ForEach-Object { $_.Id }
 
@@ -88,6 +89,7 @@ jobs:
 
             # Define API URL for starting schedule
             $url = Build-ControllerApiUrl $controllerBaseUrl "api/v4/schedules/$scheduleId/runNow"
+            Write-Output "RunNow URL: $url"
 
             try {
                 # Make PUT request to start schedule
@@ -110,7 +112,9 @@ jobs:
                         Start-Sleep -Seconds ${{ vars.TIME_DELAY }}
 
                         # Make API call to retrieve executedRunItems
-                        $executedRunItems = Invoke-RestMethod -Uri (Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/runItemIds") -Method Get -Headers $headers -ContentType "application/json"
+                        $runItemIdsUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/runItemIds"
+                        Write-Output "RunItemIds URL: $runItemIdsUrl"
+                        $executedRunItems = Invoke-RestMethod -Uri $runItemIdsUrl -Method Get -Headers $headers -ContentType "application/json"
         
                         # Filter out already processed runItems
                         $executedRunItems.RunItemIds = [string[]]$executedRunItems.RunItemIds
@@ -118,7 +122,9 @@ jobs:
                         Write-Output "NewExecutedRunItems: $($newExecutedRunItems | ConvertTo-Json -Depth 10)"
                         foreach ($runItemId in $newExecutedRunItems) {
                             # Make API call to get runItem details
-                            $runItem = Invoke-RestMethod -Uri (Build-ControllerApiUrl $controllerBaseUrl "api/v4/runItems/$runItemId") -Method Get -Headers $headers -ContentType "application/json"
+                            $runItemUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/runItems/$runItemId"
+                            Write-Output "RunItem URL: $runItemUrl"
+                            $runItem = Invoke-RestMethod -Uri $runItemUrl -Method Get -Headers $headers -ContentType "application/json"
 
                             $status = $runItem.Status
                             $flowTitle = $runItem.FlowInfo.FlowTitle
@@ -203,11 +209,15 @@ jobs:
                         }
 
                         # Check if the runStatus is Finished
-                        $runStatus = Invoke-RestMethod -Uri (Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/status") -Method Get -Headers $headers -ContentType "application/json"
+                        $runStatusUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/status"
+                        Write-Output "RunStatus URL: $runStatusUrl"
+                        $runStatus = Invoke-RestMethod -Uri $runStatusUrl -Method Get -Headers $headers -ContentType "application/json"
           
                         if ($($runStatus.Status) -eq "Finished") {
                             # Check if all runItems have been processed
-                            $allExecutedRunItems = Invoke-RestMethod -Uri (Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/runItemIds") -Method Get -Headers $headers -ContentType "application/json"
+                            $allRunItemIdsUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/runItemIds"
+                            Write-Output "All RunItemIds URL: $allRunItemIdsUrl"
+                            $allExecutedRunItems = Invoke-RestMethod -Uri $allRunItemIdsUrl -Method Get -Headers $headers -ContentType "application/json"
                             Write-Output "Processed Run Items Count: $($runItemsId.Count)"
                             if ($allExecutedRunItems.RunItemIds.Count -gt 0 -and $allExecutedRunItems.RunItemIds.Count -le $runItemsId.Count) {
                                 $isStillRunning = $false
@@ -245,6 +255,7 @@ jobs:
                 }
 
             } catch {
+                Write-Error "Last known schedule API URL: $url"
                 Write-Error "Error occurred: $_"
                 exit 1
             }
