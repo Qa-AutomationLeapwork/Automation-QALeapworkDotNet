@@ -1,10 +1,11 @@
 name: Leapwork Action
 
 on:
-  push:
-    branches:
-      - main
+  schedule:
+    - cron: '0 4 * * 2'
+
   workflow_dispatch:
+ 
 
 jobs:
   build:
@@ -12,85 +13,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v2
       - name: Run Leapwork Automated Test flows for multiple schedules
         shell: pwsh 
         run: |
-          function Normalize-UrlQuerySeparators([string]$InputValue) {
-            if ([string]::IsNullOrWhiteSpace($InputValue)) {
-              return $InputValue
-            }
-
-            $firstQuestionMarkIndex = $InputValue.IndexOf('?')
-            if ($firstQuestionMarkIndex -lt 0) {
-              return $InputValue
-            }
-
-            $pathPart = $InputValue.Substring(0, $firstQuestionMarkIndex + 1)
-            $queryPart = $InputValue.Substring($firstQuestionMarkIndex + 1).Replace('?', '&')
-            return $pathPart + $queryPart
-          }
-
-          function Get-ControllerBaseUrl([string]$HostnameOrUrl) {
-            $trimmedInput = Normalize-UrlQuerySeparators(($HostnameOrUrl ?? '').Trim())
-
-            $uri = $null
-            if ([System.Uri]::TryCreate($trimmedInput, [System.UriKind]::Absolute, [ref]$uri) -and `
-                ($uri.Scheme -eq 'http' -or $uri.Scheme -eq 'https') -and `
-                -not [string]::IsNullOrWhiteSpace($uri.Host)) {
-              $builder = [System.UriBuilder]::new($uri)
-            }
-            else {
-              $builder = [System.UriBuilder]::new("https://$trimmedInput")
-            }
-
-            if (-not $builder.Port -or $builder.Port -eq -1) {
-              if ($builder.Scheme -eq 'https') {
-                $builder.Port = 443
-              }
-              else {
-                $builder.Port = 80
-              }
-            }
-
-            if ([string]::IsNullOrWhiteSpace($builder.Path)) {
-              $builder.Path = '/'
-            }
-
-            return $builder
-          }
-
-          function Build-ControllerApiUrl([System.UriBuilder]$BaseUrlBuilder, [string]$RelativePath) {
-            $builder = [System.UriBuilder]::new($BaseUrlBuilder.Uri)
-            $normalizedBasePath = (($builder.Path ?? '/') -replace '/+$', '')
-            $normalizedRelativePath = (($RelativePath ?? '') -replace '^/+', '')
-            $builder.Path = "$normalizedBasePath/$normalizedRelativePath"
-            return $builder.Uri.AbsoluteUri
-          }
-
           # Define headers
           $headers = @{
             "AccessKey" = "${{ secrets.ACCESS_KEY }}"
           }
-
-          $controllerBaseUrl = Get-ControllerBaseUrl "${{ vars.BASE_URL }}"
-
           # Fetch schedule IDs from the API
-          $scheduleApiUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/schedules"
-          Write-Output "Schedules URL: $scheduleApiUrl"
+          $scheduleApiUrl = "${{ vars.BASE_URL }}/api/v4/schedules"
           $schedulesResponse = Invoke-RestMethod -Uri $scheduleApiUrl -Method Get -Headers $headers -ContentType "application/json"
           $scheduleIds = $schedulesResponse | ForEach-Object { $_.Id }
-
           # Initialize a hashtable to store cumulative results
           $results = @{}
-
           foreach ($scheduleId in $scheduleIds) {
             Write-Output "Processing Schedule ID: $scheduleId"
-
             # Define API URL for starting schedule
-            $url = Build-ControllerApiUrl $controllerBaseUrl "api/v4/schedules/$scheduleId/runNow"
-            Write-Output "RunNow URL: $url"
-
+            $url = "${{ vars.BASE_URL }}/api/v4/schedules/$scheduleId/runNow"
             try {
                 # Make PUT request to start schedule
                 $response = Invoke-RestMethod -Uri $url -Method PUT -Headers $headers -ContentType "application/json" -ErrorAction Stop
@@ -101,20 +41,15 @@ jobs:
                    
                     $runId = $response.RunId
                     Write-Output "runId: $runId"
-
                     # Initialize variables
                     $isStillRunning = $true
                     $runItemsId = @()
                     $runItemsDetails = @()
-
                     do {
                         # Simulate waiting
                         Start-Sleep -Seconds ${{ vars.TIME_DELAY }}
-
                         # Make API call to retrieve executedRunItems
-                        $runItemIdsUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/runItemIds"
-                        Write-Output "RunItemIds URL: $runItemIdsUrl"
-                        $executedRunItems = Invoke-RestMethod -Uri $runItemIdsUrl -Method Get -Headers $headers -ContentType "application/json"
+                        $executedRunItems = Invoke-RestMethod -Uri "${{ vars.BASE_URL }}/api/v4/run/$runId/runItemIds" -Method Get -Headers $headers -ContentType "application/json"
         
                         # Filter out already processed runItems
                         $executedRunItems.RunItemIds = [string[]]$executedRunItems.RunItemIds
@@ -122,16 +57,11 @@ jobs:
                         Write-Output "NewExecutedRunItems: $($newExecutedRunItems | ConvertTo-Json -Depth 10)"
                         foreach ($runItemId in $newExecutedRunItems) {
                             # Make API call to get runItem details
-                            $runItemUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/runItems/$runItemId"
-                            Write-Output "RunItem URL: $runItemUrl"
-                            $runItem = Invoke-RestMethod -Uri $runItemUrl -Method Get -Headers $headers -ContentType "application/json"
-
+                            $runItem = Invoke-RestMethod -Uri "${{ vars.BASE_URL }}/api/v4/runItems/$runItemId" -Method Get -Headers $headers -ContentType "application/json"
                             $status = $runItem.Status
                             $flowTitle = $runItem.FlowInfo.FlowTitle
-
                             Write-Output "Status: $status"
                             Write-Output "Flow Title: $flowTitle"
-
                             # Handle different statuses
                            switch ($runItem.Status) {
                               "NoStatus" {
@@ -195,48 +125,37 @@ jobs:
                                   Write-Output "Unhandled status: $($runItem.Status)"
                               }
                           }
-
                             # Add runItem details to the list
                             $runItemsDetails += [pscustomobject]@{
                                 'RunItemId' = $runItemId
                                 'FlowTitle' = $flowTitle
                                 'Status' = $status
                             }
-
                             # Add runItemId to processed list
                             $runItemsId += $runItemId
                             
                         }
-
                         # Check if the runStatus is Finished
-                        $runStatusUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/status"
-                        Write-Output "RunStatus URL: $runStatusUrl"
-                        $runStatus = Invoke-RestMethod -Uri $runStatusUrl -Method Get -Headers $headers -ContentType "application/json"
+                        $runStatus = Invoke-RestMethod -Uri "${{ vars.BASE_URL }}/api/v4/run/$runId/status" -Method Get -Headers $headers -ContentType "application/json"
           
                         if ($($runStatus.Status) -eq "Finished") {
                             # Check if all runItems have been processed
-                            $allRunItemIdsUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/runItemIds"
-                            Write-Output "All RunItemIds URL: $allRunItemIdsUrl"
-                            $allExecutedRunItems = Invoke-RestMethod -Uri $allRunItemIdsUrl -Method Get -Headers $headers -ContentType "application/json"
+                            $allExecutedRunItems = Invoke-RestMethod -Uri "${{ vars.BASE_URL }}/api/v4/run/$runId/runItemIds" -Method Get -Headers $headers -ContentType "application/json"
                             Write-Output "Processed Run Items Count: $($runItemsId.Count)"
                             if ($allExecutedRunItems.RunItemIds.Count -gt 0 -and $allExecutedRunItems.RunItemIds.Count -le $runItemsId.Count) {
                                 $isStillRunning = $false
                             }
                         }
-
                         if ($isStillRunning) {
                             Write-Output "The schedule status is already '$runStatus' - wait a minute..."
                         }
-
                     } while ($isStillRunning)
-
                     # Process results for current schedule
                     $groupedRunItems = $runItemsDetails | Group-Object -Property FlowTitle
                     foreach ($group in $groupedRunItems) {
                         $flowTitle = $group.Name
                         $passedCount = ($group.Group | Where-Object { $_.Status -eq 'Passed' }).Count
                         $failedCount = ($group.Group | Where-Object { $_.Status -eq 'Failed' }).Count
-
                         if (-not $results.ContainsKey($flowTitle)) {
                             $results[$flowTitle] = [pscustomobject]@{
                                 'FlowTitle' = $flowTitle
@@ -244,33 +163,26 @@ jobs:
                                 'FailedCount' = 0
                             }
                         }
-
                         $results[$flowTitle].PassedCount += $passedCount
                         $results[$flowTitle].FailedCount += $failedCount
                     }
-
                 } else {
                     Write-Error "Failed to start schedule. HTTP status code: $($response.StatusCode)"
                     exit 1
                 }
-
             } catch {
-                Write-Error "Last known schedule API URL: $url"
                 Write-Error "Error occurred: $_"
                 exit 1
             }
           }
-
           # Prepare CSV content
           $csvContent = "Flow Title,Passed Count,Failed Count"
           foreach ($result in $results.Values) {
               $csvContent += "`n$($result.FlowTitle),$($result.PassedCount),$($result.FailedCount)"
           }
-
           # Save CSV content to a file
           $csvContent | Out-File -FilePath output.csv -Encoding utf8
           Write-Output "Results saved to output.csv"
-
       - name: Upload output file
         uses: actions/upload-artifact@v4
         with:
