@@ -34,15 +34,23 @@ jobs:
           function Get-ControllerBaseUrl([string]$HostnameOrUrl) {
             $trimmedInput = Normalize-UrlQuerySeparators(($HostnameOrUrl ?? '').Trim())
 
-            $uri = $null
-            if ([System.Uri]::TryCreate($trimmedInput, [System.UriKind]::Absolute, [ref]$uri) -and `
-                ($uri.Scheme -eq 'http' -or $uri.Scheme -eq 'https') -and `
-                -not [string]::IsNullOrWhiteSpace($uri.Host)) {
-              $builder = [System.UriBuilder]::new($uri)
+            if ($trimmedInput.StartsWith('http://') -or $trimmedInput.StartsWith('https://')) {
+              $candidate = $trimmedInput
+            }
+            elseif ($trimmedInput.Contains('/') -or $trimmedInput.Contains('?')) {
+              $candidate = "https://$trimmedInput"
             }
             else {
-              $builder = [System.UriBuilder]::new("https://$trimmedInput")
+              $candidate = "https://$trimmedInput"
             }
+
+            $uri = $null
+            if (-not [System.Uri]::TryCreate($candidate, [System.UriKind]::Absolute, [ref]$uri) -or `
+                [string]::IsNullOrWhiteSpace($uri.Host)) {
+              throw 'Invalid controller URL'
+            }
+
+            $builder = [System.UriBuilder]::new($uri)
 
             if (-not $builder.Port -or $builder.Port -eq -1) {
               if ($builder.Scheme -eq 'https') {
