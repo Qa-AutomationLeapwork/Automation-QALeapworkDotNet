@@ -514,8 +514,8 @@ jobs:
           $jobSummaryLines += ""
           $jobSummaryLines += "### Artifacts"
           $jobSummaryLines += ""
-          $jobSummaryLines += "- `output.csv`"
-          $jobSummaryLines += "- `output-summary.csv`"
+          $jobSummaryLines += '- `output.csv`'
+          $jobSummaryLines += '- `output-summary.csv`'
 
           $jobSummaryLines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
