@@ -6,8 +6,8 @@ This repository contains a GitHub Actions workflow that triggers Leapwork schedu
 
 The workflow in [`.github/workflows/main.yml`](.github/workflows/main.yml):
 
-- runs on pushes to `main`
 - can also be started manually with `workflow_dispatch`
+- runs automatically every Wednesday at `8:00 PM` in the `Asia/Kolkata` timezone
 - calls the Leapwork Controller API to fetch available schedules
 - starts each schedule with `runNow`
 - polls run status and run items until execution is complete
@@ -61,7 +61,8 @@ The workflow normalizes the URL before building API endpoints such as:
 2. Go to `Settings` -> `Secrets and variables` -> `Actions`.
 3. Add the `ACCESS_KEY` secret.
 4. Add the `BASE_URL`, `TIME_DELAY`, and `ISDONESTATUSASSUCCESS` variables.
-5. Commit and push changes to `main`, or run the workflow manually from the `Actions` tab.
+5. Commit and push changes to `main`.
+6. Run the workflow manually from the `Actions` tab or wait for the scheduled Wednesday `8:00 PM IST` run.
 
 ## Example Configuration
 
@@ -82,9 +83,9 @@ Recommended starting values:
 
 ## How To Run The Workflow
 
-### Automatic run
+### Scheduled run
 
-The workflow runs automatically when code is pushed to the `main` branch.
+The workflow runs automatically every Wednesday at `8:00 PM` in the `Asia/Kolkata` timezone.
 
 ### Manual run
 
