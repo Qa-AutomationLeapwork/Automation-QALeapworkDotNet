@@ -133,6 +133,29 @@ jobs:
             return $normalizedValue
           }
 
+          function Is-TransientRunItemStatus([string]$Status) {
+            return $Status -in @("NoStatus", "Initializing", "Connecting", "Connected", "Running", "IsProcessing")
+          }
+
+          function Get-RunItemResult([string]$Status, [bool]$IsDoneStatusAsSuccess) {
+            switch ($Status) {
+              "Passed" { return "Passed" }
+              "Failed" { return "Failed" }
+              "Error" { return "Failed" }
+              "Inconclusive" { return "Failed" }
+              "Timeout" { return "Failed" }
+              "Cancelled" { return "Failed" }
+              "Done" {
+                if ($IsDoneStatusAsSuccess) {
+                  return "Passed"
+                }
+
+                return "Failed"
+              }
+              default { return "Unknown" }
+            }
+          }
+
           function Get-ErrorDetail([System.Management.Automation.ErrorRecord]$ErrorRecord) {
             $details = @()
 
@@ -227,7 +250,20 @@ jobs:
           Log-Section "Fetching available Leapwork schedules."
           Log-Info "Schedules URL: $scheduleApiUrl"
           $schedulesResponse = Invoke-LeapworkApi -Method "Get" -Uri $scheduleApiUrl -Headers $headers
-          $scheduleIds = $schedulesResponse | ForEach-Object { $_.Id }
+          $scheduleIds = @()
+          $scheduleTitlesById = @{}
+
+          foreach ($schedule in @($schedulesResponse)) {
+            if ([string]::IsNullOrWhiteSpace($schedule.Id)) {
+              continue
+            }
+
+            $scheduleId = [string]$schedule.Id
+            $scheduleTitle = if ([string]::IsNullOrWhiteSpace($schedule.Title)) { $scheduleId } else { $schedule.Title.Trim() }
+
+            $scheduleIds += $scheduleId
+            $scheduleTitlesById[$scheduleId] = $scheduleTitle
+          }
 
           if ($null -eq $scheduleIds -or $scheduleIds.Count -eq 0) {
             Fail-Workflow "No Leapwork schedules were returned from '$scheduleApiUrl'. Verify the ACCESS_KEY permissions and the BASE_URL value."
@@ -235,12 +271,15 @@ jobs:
 
           Log-Info "Found $($scheduleIds.Count) schedule(s) to process."
 
-          # Initialize a hashtable to store cumulative results
-          $results = @{}
+          # Initialize a list to store per-flow results
+          $results = @()
 
           foreach ($scheduleId in $scheduleIds) {
-            Start-LogGroup "Schedule $scheduleId"
+            $scheduleTitle = if ($scheduleTitlesById.ContainsKey($scheduleId)) { $scheduleTitlesById[$scheduleId] } else { $scheduleId }
+
+            Start-LogGroup "Schedule $scheduleId - $scheduleTitle"
             Log-Section "Processing schedule ID: $scheduleId"
+            Log-Info "Schedule name: $scheduleTitle"
 
             # Define API URL for starting schedule
             $url = Build-ControllerApiUrl $controllerBaseUrl "api/v4/schedules/$scheduleId/runNow"
@@ -284,69 +323,54 @@ jobs:
                             $runItem = Invoke-LeapworkApi -Method "Get" -Uri $runItemUrl -Headers $headers
 
                             $status = $runItem.Status
-                            $flowTitle = $runItem.FlowInfo.FlowTitle
+                            $flowTitle = if ([string]::IsNullOrWhiteSpace($runItem.FlowInfo.FlowTitle)) { $runItemId } else { $runItem.FlowInfo.FlowTitle }
+                            $executedAgent = "Unknown"
+
+                            if ($null -ne $runItem.AgentInfo) {
+                              if (-not [string]::IsNullOrWhiteSpace($runItem.AgentInfo.EnvironmentTitle)) {
+                                $executedAgent = $runItem.AgentInfo.EnvironmentTitle
+                              }
+                              elseif (-not [string]::IsNullOrWhiteSpace($runItem.AgentInfo.AgentId)) {
+                                $executedAgent = $runItem.AgentInfo.AgentId
+                              }
+                              elseif (-not [string]::IsNullOrWhiteSpace($runItem.AgentInfo.ConnectionType)) {
+                                $executedAgent = $runItem.AgentInfo.ConnectionType
+                              }
+                            }
 
                             Log-Info "Run item $runItemId status: $status"
                             Log-Info "Flow title: $flowTitle"
+                            Log-Info "Executed agent: $executedAgent"
+
+                            if (Is-TransientRunItemStatus $status) {
+                              Log-Info "Run item $runItemId is still in a transient state. It will be checked again in the next poll."
+                              continue
+                            }
+
+                            $result = Get-RunItemResult -Status $status -IsDoneStatusAsSuccess $isDoneStatusAsSuccess
 
                             # Handle different statuses
                            switch ($runItem.Status) {
-                              "NoStatus" {
-                                  # Remove runItemId from the list
-                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
-                              }
-                              "Initializing" {
-                                  # Remove runItemId from the list
-                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
-                              }
-                              "Connecting" {
-                                  # Remove runItemId from the list
-                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
-                              }
-                              "Connected" {
-                                  # Remove runItemId from the list
-                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
-                              }
-                              "Running" {
-                                  # Remove runItemId from the list
-                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
-                              }
-                              "IsProcessing" {
-                                  # Remove runItemId from the list
-                                   $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
-                              }
                               "Passed" {
                                   Log-Info "Run item $runItemId completed with Passed status."
-                                  $passedCount++
                               }
                               "Failed" {
                                   Log-Warn "Run item $runItemId completed with Failed status."
-                                  $failedCount++
                               }
                               "Error" {
                                   Log-Warn "Run item $runItemId completed with Error status."
-                                  $errorCount++
                               }
                               "Inconclusive" {
                                   Log-Warn "Run item $runItemId completed with Inconclusive status."
-                                  $errorCount++
                               }
                               "Timeout" {
                                   Log-Warn "Run item $runItemId completed with Timeout status."
-                                  $errorCount++
                               }
                               "Cancelled" {
                                   Log-Warn "Run item $runItemId completed with Cancelled status."
-                                  $errorCount++
                               }
                               "Done" {
                                   Log-Info "Run item $runItemId completed with Done status."
-                                  # Determine if Done status should be considered Passed or Failed
-                                  if ($isDoneStatusAsSuccess) {
-                                      $passedCount++
-                                  } else {
-                                      $failedCount++
-                                  }
                               }
                               default {
                                   Log-Warn "Unhandled status encountered for run item $($runItemId): $($runItem.Status)"
@@ -355,9 +379,11 @@ jobs:
 
                             # Add runItem details to the list
                             $runItemsDetails += [pscustomobject]@{
-                                'RunItemId' = $runItemId
-                                'FlowTitle' = $flowTitle
-                                'Status' = $status
+                                'Schedule Name' = $scheduleTitle
+                                'Flow Title' = $flowTitle
+                                'Run Item Status' = $status
+                                'Result' = $result
+                                'Executed Agent' = $executedAgent
                             }
 
                             # Add runItemId to processed list
@@ -387,24 +413,7 @@ jobs:
 
                     } while ($isStillRunning)
 
-                    # Process results for current schedule
-                    $groupedRunItems = $runItemsDetails | Group-Object -Property FlowTitle
-                    foreach ($group in $groupedRunItems) {
-                        $flowTitle = $group.Name
-                        $passedCount = ($group.Group | Where-Object { $_.Status -eq 'Passed' }).Count
-                        $failedCount = ($group.Group | Where-Object { $_.Status -eq 'Failed' }).Count
-
-                        if (-not $results.ContainsKey($flowTitle)) {
-                            $results[$flowTitle] = [pscustomobject]@{
-                                'FlowTitle' = $flowTitle
-                                'PassedCount' = 0
-                                'FailedCount' = 0
-                            }
-                        }
-
-                        $results[$flowTitle].PassedCount += $passedCount
-                        $results[$flowTitle].FailedCount += $failedCount
-                    }
+                    $results += $runItemsDetails
 
                     Log-Section "Finished processing schedule ID: $scheduleId"
                     Log-Info "Captured $($runItemsDetails.Count) run item result(s) for this schedule."
@@ -428,15 +437,17 @@ jobs:
           }
 
           # Prepare CSV content
-          $csvContent = "Flow Title,Passed Count,Failed Count"
-          foreach ($result in $results.Values) {
-              $csvContent += "`n$($result.FlowTitle),$($result.PassedCount),$($result.FailedCount)"
+          if ($results.Count -gt 0) {
+            $results |
+              Select-Object 'Schedule Name', 'Flow Title', 'Run Item Status', 'Result', 'Executed Agent' |
+              Export-Csv -Path output.csv -NoTypeInformation -Encoding utf8
+          }
+          else {
+            "Schedule Name,Flow Title,Run Item Status,Result,Executed Agent" | Out-File -FilePath output.csv -Encoding utf8
           }
 
-          # Save CSV content to a file
-          $csvContent | Out-File -FilePath output.csv -Encoding utf8
           Log-Section "Completed workflow execution."
-          Log-Info "Aggregated results for $($results.Count) flow title(s)."
+          Log-Info "Captured $($results.Count) flow result row(s) across all schedules."
           Log-Info "Results saved to output.csv"
 
       - name: Upload output file
