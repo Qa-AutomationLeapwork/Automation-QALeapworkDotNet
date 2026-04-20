@@ -17,6 +17,7 @@ jobs:
         shell: pwsh 
         run: |
           $ErrorActionPreference = 'Stop'
+          $workflowStartTime = [DateTime]::UtcNow
 
           function Write-Log([string]$Level, [string]$Message) {
             $timestamp = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss')
@@ -41,6 +42,10 @@ jobs:
 
           function End-LogGroup() {
             Write-Output "::endgroup::"
+          }
+
+          function Get-DurationInSeconds([datetime]$StartTime, [datetime]$EndTime) {
+            return [math]::Round(($EndTime - $StartTime).TotalSeconds, 2)
           }
 
           function Normalize-UrlQuerySeparators([string]$InputValue) {
@@ -273,9 +278,11 @@ jobs:
 
           # Initialize a list to store per-flow results
           $results = @()
+          $scheduleSummaries = @()
 
           foreach ($scheduleId in $scheduleIds) {
             $scheduleTitle = if ($scheduleTitlesById.ContainsKey($scheduleId)) { $scheduleTitlesById[$scheduleId] } else { $scheduleId }
+            $scheduleStartTime = [DateTime]::UtcNow
 
             Start-LogGroup "Schedule $scheduleId - $scheduleTitle"
             Log-Section "Processing schedule ID: $scheduleId"
@@ -414,9 +421,26 @@ jobs:
                     } while ($isStillRunning)
 
                     $results += $runItemsDetails
+                    $scheduleEndTime = [DateTime]::UtcNow
+                    $scheduleDurationSeconds = Get-DurationInSeconds -StartTime $scheduleStartTime -EndTime $scheduleEndTime
+                    $schedulePassedFlowCount = @($runItemsDetails | Where-Object { $_.Result -eq 'Passed' }).Count
+                    $scheduleFailedFlowCount = @($runItemsDetails | Where-Object { $_.Result -eq 'Failed' }).Count
+
+                    $scheduleSummaries += [pscustomobject]@{
+                        'Summary Type' = 'Schedule'
+                        'Schedule Name' = $scheduleTitle
+                        'Schedule ID' = $scheduleId
+                        'Triggered Schedules Count' = ''
+                        'Flow Count' = $runItemsDetails.Count
+                        'Passed Flow Count' = $schedulePassedFlowCount
+                        'Failed Flow Count' = $scheduleFailedFlowCount
+                        'Schedule Duration Seconds' = $scheduleDurationSeconds
+                        'Overall Duration Seconds' = ''
+                    }
 
                     Log-Section "Finished processing schedule ID: $scheduleId"
                     Log-Info "Captured $($runItemsDetails.Count) run item result(s) for this schedule."
+                    Log-Info "Schedule duration: $scheduleDurationSeconds seconds"
 
                 } else {
                     Fail-Workflow "Failed to start schedule '$scheduleId' because the Leapwork API returned an empty response. URL: $url"
@@ -436,6 +460,25 @@ jobs:
             }
           }
 
+          $workflowEndTime = [DateTime]::UtcNow
+          $workflowDurationSeconds = Get-DurationInSeconds -StartTime $workflowStartTime -EndTime $workflowEndTime
+          $triggeredSchedulesCount = $scheduleIds.Count
+          $totalFlowCount = $results.Count
+          $totalPassedFlowCount = @($results | Where-Object { $_.Result -eq 'Passed' }).Count
+          $totalFailedFlowCount = @($results | Where-Object { $_.Result -eq 'Failed' }).Count
+
+          $overallSummary = [pscustomobject]@{
+              'Summary Type' = 'Overall'
+              'Schedule Name' = 'All Schedules'
+              'Schedule ID' = ''
+              'Triggered Schedules Count' = $triggeredSchedulesCount
+              'Flow Count' = $totalFlowCount
+              'Passed Flow Count' = $totalPassedFlowCount
+              'Failed Flow Count' = $totalFailedFlowCount
+              'Schedule Duration Seconds' = ''
+              'Overall Duration Seconds' = $workflowDurationSeconds
+          }
+
           # Prepare CSV content
           if ($results.Count -gt 0) {
             $results |
@@ -446,12 +489,21 @@ jobs:
             "Schedule Name,Flow Title,Run Item Status,Result,Executed Agent" | Out-File -FilePath output.csv -Encoding utf8
           }
 
+          @($overallSummary) + $scheduleSummaries |
+            Select-Object 'Summary Type', 'Schedule Name', 'Schedule ID', 'Triggered Schedules Count', 'Flow Count', 'Passed Flow Count', 'Failed Flow Count', 'Schedule Duration Seconds', 'Overall Duration Seconds' |
+            Export-Csv -Path output-summary.csv -NoTypeInformation -Encoding utf8
+
           Log-Section "Completed workflow execution."
           Log-Info "Captured $($results.Count) flow result row(s) across all schedules."
+          Log-Info "Triggered schedules: $triggeredSchedulesCount"
+          Log-Info "Overall workflow duration: $workflowDurationSeconds seconds"
           Log-Info "Results saved to output.csv"
+          Log-Info "Summary saved to output-summary.csv"
 
       - name: Upload output file
         uses: actions/upload-artifact@v4
         with:
           name: output-csv
-          path: output.csv
+          path: |
+            output.csv
+            output-summary.csv
