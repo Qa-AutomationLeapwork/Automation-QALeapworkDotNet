@@ -493,6 +493,32 @@ jobs:
             Select-Object 'Summary Type', 'Schedule Name', 'Schedule ID', 'Triggered Schedules Count', 'Flow Count', 'Passed Flow Count', 'Failed Flow Count', 'Schedule Duration Seconds', 'Overall Duration Seconds' |
             Export-Csv -Path output-summary.csv -NoTypeInformation -Encoding utf8
 
+          $jobSummaryLines = @()
+          $jobSummaryLines += "## Leapwork Run Summary"
+          $jobSummaryLines += ""
+          $jobSummaryLines += "- Triggered schedules: $triggeredSchedulesCount"
+          $jobSummaryLines += "- Total flows: $totalFlowCount"
+          $jobSummaryLines += "- Passed flows: $totalPassedFlowCount"
+          $jobSummaryLines += "- Failed flows: $totalFailedFlowCount"
+          $jobSummaryLines += "- Overall duration: $workflowDurationSeconds seconds"
+          $jobSummaryLines += ""
+          $jobSummaryLines += "### Per-schedule summary"
+          $jobSummaryLines += ""
+          $jobSummaryLines += "| Schedule Name | Schedule ID | Flow Count | Passed | Failed | Duration (s) |"
+          $jobSummaryLines += "| --- | --- | ---: | ---: | ---: | ---: |"
+
+          foreach ($scheduleSummary in $scheduleSummaries) {
+            $jobSummaryLines += "| $($scheduleSummary.'Schedule Name') | $($scheduleSummary.'Schedule ID') | $($scheduleSummary.'Flow Count') | $($scheduleSummary.'Passed Flow Count') | $($scheduleSummary.'Failed Flow Count') | $($scheduleSummary.'Schedule Duration Seconds') |"
+          }
+
+          $jobSummaryLines += ""
+          $jobSummaryLines += "### Artifacts"
+          $jobSummaryLines += ""
+          $jobSummaryLines += "- `output.csv`"
+          $jobSummaryLines += "- `output-summary.csv`"
+
+          $jobSummaryLines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
           Log-Section "Completed workflow execution."
           Log-Info "Captured $($results.Count) flow result row(s) across all schedules."
           Log-Info "Triggered schedules: $triggeredSchedulesCount"
