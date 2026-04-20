@@ -11,6 +11,7 @@ The workflow in [`.github/workflows/main.yml`](.github/workflows/main.yml):
 - calls the Leapwork Controller API to fetch available schedules
 - starts each schedule with `runNow`
 - polls run status and run items until execution is complete
+- writes a GitHub Actions job summary directly on the workflow run page
 - writes a detailed `output.csv` file with schedule, flow, result, and agent details
 - writes an aggregated `output-summary.csv` file with schedule counts and execution durations
 - uploads both CSV files as a GitHub Actions artifact
@@ -96,6 +97,15 @@ The workflow runs automatically every Wednesday at `8:00 PM` in the `Asia/Kolkat
 ## Output
 
 When the workflow completes, it uploads an artifact named `output-csv`.
+
+It also writes a GitHub Actions job summary to the run page that shows:
+
+- triggered schedule count
+- total flow count
+- passed and failed flow totals
+- overall execution duration
+- a per-schedule summary table
+- the generated artifact names
 
 The artifact contains two CSV files.
 
