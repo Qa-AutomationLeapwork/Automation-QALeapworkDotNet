@@ -18,6 +18,31 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
+          function Write-Log([string]$Level, [string]$Message) {
+            $timestamp = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss')
+            Write-Output "[$timestamp] [$Level] $Message"
+          }
+
+          function Log-Info([string]$Message) {
+            Write-Log "INFO" $Message
+          }
+
+          function Log-Warn([string]$Message) {
+            Write-Log "WARN" $Message
+          }
+
+          function Log-Section([string]$Message) {
+            Write-Log "STEP" $Message
+          }
+
+          function Start-LogGroup([string]$Title) {
+            Write-Output "::group::$Title"
+          }
+
+          function End-LogGroup() {
+            Write-Output "::endgroup::"
+          }
+
           function Normalize-UrlQuerySeparators([string]$InputValue) {
             if ([string]::IsNullOrWhiteSpace($InputValue)) {
               return $InputValue
@@ -79,7 +104,7 @@ jobs:
           }
 
           function Fail-Workflow([string]$Message) {
-            Write-Error $Message
+            Write-Log "ERROR" $Message
             exit 1
           }
 
@@ -175,9 +200,15 @@ jobs:
             Fail-Workflow "Invalid BASE_URL value '$baseUrlInput'. Provide a valid Leapwork Controller URL or hostname."
           }
 
+          Log-Section "Validated workflow configuration."
+          Log-Info "Controller host: $($controllerBaseUrl.Host)"
+          Log-Info "Polling delay: $timeDelay seconds"
+          Log-Info "Treat 'Done' as success: $isDoneStatusAsSuccess"
+
           # Fetch schedule IDs from the API
           $scheduleApiUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/schedules"
-          Write-Output "Schedules URL: $scheduleApiUrl"
+          Log-Section "Fetching available Leapwork schedules."
+          Log-Info "Schedules URL: $scheduleApiUrl"
           $schedulesResponse = Invoke-LeapworkApi -Method "Get" -Uri $scheduleApiUrl -Headers $headers
           $scheduleIds = $schedulesResponse | ForEach-Object { $_.Id }
 
@@ -185,15 +216,18 @@ jobs:
             Fail-Workflow "No Leapwork schedules were returned from '$scheduleApiUrl'. Verify the ACCESS_KEY permissions and the BASE_URL value."
           }
 
+          Log-Info "Found $($scheduleIds.Count) schedule(s) to process."
+
           # Initialize a hashtable to store cumulative results
           $results = @{}
 
           foreach ($scheduleId in $scheduleIds) {
-            Write-Output "Processing Schedule ID: $scheduleId"
+            Start-LogGroup "Schedule $scheduleId"
+            Log-Section "Processing schedule ID: $scheduleId"
 
             # Define API URL for starting schedule
             $url = Build-ControllerApiUrl $controllerBaseUrl "api/v4/schedules/$scheduleId/runNow"
-            Write-Output "RunNow URL: $url"
+            Log-Info "RunNow URL: $url"
 
             try {
                 # Make PUT request to start schedule
@@ -206,7 +240,7 @@ jobs:
                         Fail-Workflow "Leapwork returned an empty RunId after starting schedule '$scheduleId'. URL: $url"
                     }
 
-                    Write-Output "runId: $runId"
+                    Log-Info "Run ID: $runId"
 
                     # Initialize variables
                     $isStillRunning = $true
@@ -219,24 +253,24 @@ jobs:
 
                         # Make API call to retrieve executedRunItems
                         $runItemIdsUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/runItemIds"
-                        Write-Output "RunItemIds URL: $runItemIdsUrl"
+                        Log-Info "RunItemIds URL: $runItemIdsUrl"
                         $executedRunItems = Invoke-LeapworkApi -Method "Get" -Uri $runItemIdsUrl -Headers $headers
         
                         # Filter out already processed runItems
                         $executedRunItems.RunItemIds = [string[]]$executedRunItems.RunItemIds
                         $newExecutedRunItems = $executedRunItems.RunItemIds | Where-Object { $_ -notin $runItemsId }
-                        Write-Output "NewExecutedRunItems: $($newExecutedRunItems | ConvertTo-Json -Depth 10)"
+                        Log-Info "Discovered $(@($newExecutedRunItems).Count) new run item(s) in this poll."
                         foreach ($runItemId in $newExecutedRunItems) {
                             # Make API call to get runItem details
                             $runItemUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/runItems/$runItemId"
-                            Write-Output "RunItem URL: $runItemUrl"
+                            Log-Info "RunItem URL: $runItemUrl"
                             $runItem = Invoke-LeapworkApi -Method "Get" -Uri $runItemUrl -Headers $headers
 
                             $status = $runItem.Status
                             $flowTitle = $runItem.FlowInfo.FlowTitle
 
-                            Write-Output "Status: $status"
-                            Write-Output "Flow Title: $flowTitle"
+                            Log-Info "Run item $runItemId status: $status"
+                            Log-Info "Flow title: $flowTitle"
 
                             # Handle different statuses
                            switch ($runItem.Status) {
@@ -265,31 +299,31 @@ jobs:
                                    $newExecutedRunItems = $newExecutedRunItems | Where-Object { $_ -ne $runItemId }
                               }
                               "Passed" {
-                                  Write-Output "Status of runItem $($runItemId): Passed"
+                                  Log-Info "Run item $runItemId completed with Passed status."
                                   $passedCount++
                               }
                               "Failed" {
-                                  Write-Output "Status of runItem $($runItemId): Failed"
+                                  Log-Warn "Run item $runItemId completed with Failed status."
                                   $failedCount++
                               }
                               "Error" {
-                                  Write-Output "Status of runItem $($runItemId): Error"
+                                  Log-Warn "Run item $runItemId completed with Error status."
                                   $errorCount++
                               }
                               "Inconclusive" {
-                                  Write-Output "Status of runItem $($runItemId): Inconclusive"
+                                  Log-Warn "Run item $runItemId completed with Inconclusive status."
                                   $errorCount++
                               }
                               "Timeout" {
-                                  Write-Output "Status of runItem $($runItemId): Timeout"
+                                  Log-Warn "Run item $runItemId completed with Timeout status."
                                   $errorCount++
                               }
                               "Cancelled" {
-                                  Write-Output "Status of runItem $($runItemId): Cancelled"
+                                  Log-Warn "Run item $runItemId completed with Cancelled status."
                                   $errorCount++
                               }
                               "Done" {
-                                  Write-Output "Status of runItem $($runItemId): Done"
+                                  Log-Info "Run item $runItemId completed with Done status."
                                   # Determine if Done status should be considered Passed or Failed
                                   if ($isDoneStatusAsSuccess) {
                                       $passedCount++
@@ -298,7 +332,7 @@ jobs:
                                   }
                               }
                               default {
-                                  Write-Output "Unhandled status: $($runItem.Status)"
+                                  Log-Warn "Unhandled status encountered for run item $runItemId: $($runItem.Status)"
                               }
                           }
 
@@ -316,22 +350,22 @@ jobs:
 
                         # Check if the runStatus is Finished
                         $runStatusUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/status"
-                        Write-Output "RunStatus URL: $runStatusUrl"
+                        Log-Info "RunStatus URL: $runStatusUrl"
                         $runStatus = Invoke-LeapworkApi -Method "Get" -Uri $runStatusUrl -Headers $headers
           
                         if ($($runStatus.Status) -eq "Finished") {
                             # Check if all runItems have been processed
                             $allRunItemIdsUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/runItemIds"
-                            Write-Output "All RunItemIds URL: $allRunItemIdsUrl"
+                            Log-Info "All RunItemIds URL: $allRunItemIdsUrl"
                             $allExecutedRunItems = Invoke-LeapworkApi -Method "Get" -Uri $allRunItemIdsUrl -Headers $headers
-                            Write-Output "Processed Run Items Count: $($runItemsId.Count)"
+                            Log-Info "Processed run item count: $($runItemsId.Count)"
                             if ($allExecutedRunItems.RunItemIds.Count -gt 0 -and $allExecutedRunItems.RunItemIds.Count -le $runItemsId.Count) {
                                 $isStillRunning = $false
                             }
                         }
 
                         if ($isStillRunning) {
-                            Write-Output "The schedule status is already '$runStatus' - wait a minute..."
+                            Log-Info "Run $runId is still in progress with status '$($runStatus.Status)'. Waiting $timeDelay seconds before the next poll."
                         }
 
                     } while ($isStillRunning)
@@ -355,6 +389,9 @@ jobs:
                         $results[$flowTitle].FailedCount += $failedCount
                     }
 
+                    Log-Section "Finished processing schedule ID: $scheduleId"
+                    Log-Info "Captured $($runItemsDetails.Count) run item result(s) for this schedule."
+
                 } else {
                     Fail-Workflow "Failed to start schedule '$scheduleId' because the Leapwork API returned an empty response. URL: $url"
                 }
@@ -368,6 +405,8 @@ jobs:
                 ) -join [Environment]::NewLine
 
                 Fail-Workflow $message
+            } finally {
+                End-LogGroup
             }
           }
 
@@ -379,7 +418,9 @@ jobs:
 
           # Save CSV content to a file
           $csvContent | Out-File -FilePath output.csv -Encoding utf8
-          Write-Output "Results saved to output.csv"
+          Log-Section "Completed workflow execution."
+          Log-Info "Aggregated results for $($results.Count) flow title(s)."
+          Log-Info "Results saved to output.csv"
 
       - name: Upload output file
         uses: actions/upload-artifact@v4
