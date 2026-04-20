@@ -1,10 +1,10 @@
 name: Leapwork Action
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+  schedule:
+    - cron: '0 20 * * 3'
+      timezone: 'Asia/Kolkata'
 
 jobs:
   build:
