@@ -332,7 +332,7 @@ jobs:
                                   }
                               }
                               default {
-                                  Log-Warn "Unhandled status encountered for run item $runItemId: $($runItem.Status)"
+                                  Log-Warn "Unhandled status encountered for run item $($runItemId): $($runItem.Status)"
                               }
                           }
 
