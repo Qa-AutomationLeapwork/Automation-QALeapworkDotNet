@@ -116,6 +116,23 @@ jobs:
             return $Value.Trim()
           }
 
+          function Normalize-BooleanInput([string]$Value) {
+            $normalizedValue = $Value.Trim()
+
+            if ($normalizedValue.Length -ge 2) {
+              $startsWithSingleQuote = $normalizedValue.StartsWith("'")
+              $endsWithSingleQuote = $normalizedValue.EndsWith("'")
+              $startsWithDoubleQuote = $normalizedValue.StartsWith('"')
+              $endsWithDoubleQuote = $normalizedValue.EndsWith('"')
+
+              if (($startsWithSingleQuote -and $endsWithSingleQuote) -or ($startsWithDoubleQuote -and $endsWithDoubleQuote)) {
+                $normalizedValue = $normalizedValue.Substring(1, $normalizedValue.Length - 2).Trim()
+              }
+            }
+
+            return $normalizedValue
+          }
+
           function Get-ErrorDetail([System.Management.Automation.ErrorRecord]$ErrorRecord) {
             $details = @()
 
@@ -176,7 +193,7 @@ jobs:
           $accessKey = Require-Value "ACCESS_KEY" "${{ secrets.ACCESS_KEY }}"
           $baseUrlInput = Require-Value "BASE_URL" "${{ vars.BASE_URL }}"
           $timeDelayInput = Require-Value "TIME_DELAY" "${{ vars.TIME_DELAY }}"
-          $isDoneStatusAsSuccessInput = Require-Value "ISDONESTATUSASSUCCESS" "${{ vars.ISDONESTATUSASSUCCESS }}"
+          $isDoneStatusAsSuccessInput = Normalize-BooleanInput (Require-Value "ISDONESTATUSASSUCCESS" "${{ vars.ISDONESTATUSASSUCCESS }}")
 
           $timeDelay = 0
           if (-not [int]::TryParse($timeDelayInput, [ref]$timeDelay) -or $timeDelay -le 0) {
