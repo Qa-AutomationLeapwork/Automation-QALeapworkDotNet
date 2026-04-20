@@ -16,6 +16,8 @@ jobs:
       - name: Run Leapwork Automated Test flows for multiple schedules
         shell: pwsh 
         run: |
+          $ErrorActionPreference = 'Stop'
+
           function Normalize-UrlQuerySeparators([string]$InputValue) {
             if ([string]::IsNullOrWhiteSpace($InputValue)) {
               return $InputValue
@@ -76,18 +78,112 @@ jobs:
             return $builder.Uri.AbsoluteUri
           }
 
-          # Define headers
-          $headers = @{
-            "AccessKey" = "${{ secrets.ACCESS_KEY }}"
+          function Fail-Workflow([string]$Message) {
+            Write-Error $Message
+            exit 1
           }
 
-          $controllerBaseUrl = Get-ControllerBaseUrl "${{ vars.BASE_URL }}"
+          function Require-Value([string]$Name, [string]$Value) {
+            if ([string]::IsNullOrWhiteSpace($Value)) {
+              Fail-Workflow "Missing required configuration value '$Name'. Configure it in GitHub Actions secrets or variables before rerunning the workflow."
+            }
+
+            return $Value.Trim()
+          }
+
+          function Get-ErrorDetail([System.Management.Automation.ErrorRecord]$ErrorRecord) {
+            $details = @()
+
+            if ($null -ne $ErrorRecord.Exception) {
+              $details += $ErrorRecord.Exception.Message
+            }
+
+            $response = $null
+            if ($null -ne $ErrorRecord.Exception -and $null -ne $ErrorRecord.Exception.Response) {
+              $response = $ErrorRecord.Exception.Response
+            }
+
+            if ($null -ne $response) {
+              if ($null -ne $response.StatusCode) {
+                $details += "HTTP status code: $([int]$response.StatusCode)"
+              }
+
+              if ($null -ne $response.ReasonPhrase) {
+                $details += "Reason: $($response.ReasonPhrase)"
+              }
+
+              try {
+                $reader = [System.IO.StreamReader]::new($response.GetResponseStream())
+                try {
+                  $responseBody = $reader.ReadToEnd()
+                  if (-not [string]::IsNullOrWhiteSpace($responseBody)) {
+                    $details += "Response body: $responseBody"
+                  }
+                }
+                finally {
+                  $reader.Dispose()
+                }
+              }
+              catch {
+              }
+            }
+
+            return ($details | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine
+          }
+
+          function Invoke-LeapworkApi([string]$Method, [string]$Uri, [hashtable]$Headers) {
+            try {
+              return Invoke-RestMethod -Uri $Uri -Method $Method -Headers $Headers -ContentType "application/json" -ErrorAction Stop
+            }
+            catch {
+              $errorDetail = Get-ErrorDetail $_
+              $message = @(
+                "Leapwork API request failed."
+                "Method: $Method"
+                "URL: $Uri"
+                $errorDetail
+              ) -join [Environment]::NewLine
+
+              Fail-Workflow $message
+            }
+          }
+
+          $accessKey = Require-Value "ACCESS_KEY" "${{ secrets.ACCESS_KEY }}"
+          $baseUrlInput = Require-Value "BASE_URL" "${{ vars.BASE_URL }}"
+          $timeDelayInput = Require-Value "TIME_DELAY" "${{ vars.TIME_DELAY }}"
+          $isDoneStatusAsSuccessInput = Require-Value "ISDONESTATUSASSUCCESS" "${{ vars.ISDONESTATUSASSUCCESS }}"
+
+          $timeDelay = 0
+          if (-not [int]::TryParse($timeDelayInput, [ref]$timeDelay) -or $timeDelay -le 0) {
+            Fail-Workflow "Invalid TIME_DELAY value '$timeDelayInput'. Provide a positive whole number of seconds in GitHub Actions variables."
+          }
+
+          $isDoneStatusAsSuccess = $false
+          if (-not [bool]::TryParse($isDoneStatusAsSuccessInput, [ref]$isDoneStatusAsSuccess)) {
+            Fail-Workflow "Invalid ISDONESTATUSASSUCCESS value '$isDoneStatusAsSuccessInput'. Use 'true' or 'false' in GitHub Actions variables."
+          }
+
+          # Define headers
+          $headers = @{
+            "AccessKey" = $accessKey
+          }
+
+          try {
+            $controllerBaseUrl = Get-ControllerBaseUrl $baseUrlInput
+          }
+          catch {
+            Fail-Workflow "Invalid BASE_URL value '$baseUrlInput'. Provide a valid Leapwork Controller URL or hostname."
+          }
 
           # Fetch schedule IDs from the API
           $scheduleApiUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/schedules"
           Write-Output "Schedules URL: $scheduleApiUrl"
-          $schedulesResponse = Invoke-RestMethod -Uri $scheduleApiUrl -Method Get -Headers $headers -ContentType "application/json"
+          $schedulesResponse = Invoke-LeapworkApi -Method "Get" -Uri $scheduleApiUrl -Headers $headers
           $scheduleIds = $schedulesResponse | ForEach-Object { $_.Id }
+
+          if ($null -eq $scheduleIds -or $scheduleIds.Count -eq 0) {
+            Fail-Workflow "No Leapwork schedules were returned from '$scheduleApiUrl'. Verify the ACCESS_KEY permissions and the BASE_URL value."
+          }
 
           # Initialize a hashtable to store cumulative results
           $results = @{}
@@ -101,13 +197,15 @@ jobs:
 
             try {
                 # Make PUT request to start schedule
-                $response = Invoke-RestMethod -Uri $url -Method PUT -Headers $headers -ContentType "application/json" -ErrorAction Stop
+                $response = Invoke-LeapworkApi -Method "Put" -Uri $url -Headers $headers
               
                 # Check if starting schedule was successful
                 if (($null -ne $response)) {
-                    $jsonResponse = $response | ConvertTo-Json -Depth 10
-                   
                     $runId = $response.RunId
+                    if ([string]::IsNullOrWhiteSpace($runId)) {
+                        Fail-Workflow "Leapwork returned an empty RunId after starting schedule '$scheduleId'. URL: $url"
+                    }
+
                     Write-Output "runId: $runId"
 
                     # Initialize variables
@@ -117,12 +215,12 @@ jobs:
 
                     do {
                         # Simulate waiting
-                        Start-Sleep -Seconds ${{ vars.TIME_DELAY }}
+                        Start-Sleep -Seconds $timeDelay
 
                         # Make API call to retrieve executedRunItems
                         $runItemIdsUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/runItemIds"
                         Write-Output "RunItemIds URL: $runItemIdsUrl"
-                        $executedRunItems = Invoke-RestMethod -Uri $runItemIdsUrl -Method Get -Headers $headers -ContentType "application/json"
+                        $executedRunItems = Invoke-LeapworkApi -Method "Get" -Uri $runItemIdsUrl -Headers $headers
         
                         # Filter out already processed runItems
                         $executedRunItems.RunItemIds = [string[]]$executedRunItems.RunItemIds
@@ -132,7 +230,7 @@ jobs:
                             # Make API call to get runItem details
                             $runItemUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/runItems/$runItemId"
                             Write-Output "RunItem URL: $runItemUrl"
-                            $runItem = Invoke-RestMethod -Uri $runItemUrl -Method Get -Headers $headers -ContentType "application/json"
+                            $runItem = Invoke-LeapworkApi -Method "Get" -Uri $runItemUrl -Headers $headers
 
                             $status = $runItem.Status
                             $flowTitle = $runItem.FlowInfo.FlowTitle
@@ -193,7 +291,7 @@ jobs:
                               "Done" {
                                   Write-Output "Status of runItem $($runItemId): Done"
                                   # Determine if Done status should be considered Passed or Failed
-                                  if (${{ vars.ISDONESTATUSASSUCCESS }}) {
+                                  if ($isDoneStatusAsSuccess) {
                                       $passedCount++
                                   } else {
                                       $failedCount++
@@ -219,13 +317,13 @@ jobs:
                         # Check if the runStatus is Finished
                         $runStatusUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/status"
                         Write-Output "RunStatus URL: $runStatusUrl"
-                        $runStatus = Invoke-RestMethod -Uri $runStatusUrl -Method Get -Headers $headers -ContentType "application/json"
+                        $runStatus = Invoke-LeapworkApi -Method "Get" -Uri $runStatusUrl -Headers $headers
           
                         if ($($runStatus.Status) -eq "Finished") {
                             # Check if all runItems have been processed
                             $allRunItemIdsUrl = Build-ControllerApiUrl $controllerBaseUrl "api/v4/run/$runId/runItemIds"
                             Write-Output "All RunItemIds URL: $allRunItemIdsUrl"
-                            $allExecutedRunItems = Invoke-RestMethod -Uri $allRunItemIdsUrl -Method Get -Headers $headers -ContentType "application/json"
+                            $allExecutedRunItems = Invoke-LeapworkApi -Method "Get" -Uri $allRunItemIdsUrl -Headers $headers
                             Write-Output "Processed Run Items Count: $($runItemsId.Count)"
                             if ($allExecutedRunItems.RunItemIds.Count -gt 0 -and $allExecutedRunItems.RunItemIds.Count -le $runItemsId.Count) {
                                 $isStillRunning = $false
@@ -258,14 +356,18 @@ jobs:
                     }
 
                 } else {
-                    Write-Error "Failed to start schedule. HTTP status code: $($response.StatusCode)"
-                    exit 1
+                    Fail-Workflow "Failed to start schedule '$scheduleId' because the Leapwork API returned an empty response. URL: $url"
                 }
 
             } catch {
-                Write-Error "Last known schedule API URL: $url"
-                Write-Error "Error occurred: $_"
-                exit 1
+                $errorDetail = Get-ErrorDetail $_
+                $message = @(
+                  "Failed while processing schedule '$scheduleId'."
+                  "Last known schedule API URL: $url"
+                  $errorDetail
+                ) -join [Environment]::NewLine
+
+                Fail-Workflow $message
             }
           }
 
