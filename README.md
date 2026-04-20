@@ -11,9 +11,9 @@ The workflow in [`.github/workflows/main.yml`](.github/workflows/main.yml):
 - calls the Leapwork Controller API to fetch available schedules
 - starts each schedule with `runNow`
 - polls run status and run items until execution is complete
-- aggregates passed and failed results by flow title
-- writes an `output.csv` file
-- uploads `output.csv` as a GitHub Actions artifact
+- writes a detailed `output.csv` file with schedule, flow, result, and agent details
+- writes an aggregated `output-summary.csv` file with schedule counts and execution durations
+- uploads both CSV files as a GitHub Actions artifact
 
 ## Required GitHub Configuration
 
@@ -97,22 +97,58 @@ The workflow runs automatically every Wednesday at `8:00 PM` in the `Asia/Kolkat
 
 When the workflow completes, it uploads an artifact named `output-csv`.
 
-The generated CSV contains:
+The artifact contains two CSV files.
+
+### output.csv
+
+This file contains one row per completed flow run.
 
 | Column | Description |
 | --- | --- |
+| `Schedule Name` | Name of the Leapwork schedule that triggered the flow |
 | `Flow Title` | Name of the Leapwork flow |
-| `Passed Count` | Number of passed run items for that flow |
-| `Failed Count` | Number of failed run items for that flow |
+| `Run Item Status` | Raw Leapwork status returned for the run item |
+| `Result` | Normalized result used by the workflow, such as `Passed` or `Failed` |
+| `Executed Agent` | Agent or environment title used for the run, when provided by Leapwork |
 
 Example:
 
 ```csv
-Flow Title,Passed Count,Failed Count
-Login Flow,5,0
-Checkout Flow,4,1
-Regression Smoke,12,0
+Schedule Name,Flow Title,Run Item Status,Result,Executed Agent
+Smoke Suite,Login Flow,Passed,Passed,Agent-01
+Smoke Suite,Checkout Flow,Failed,Failed,Agent-02
+Regression Suite,Search Flow,Done,Passed,Agent-03
 ```
+
+### output-summary.csv
+
+This file contains one overall summary row and one row for each triggered schedule.
+
+| Column | Description |
+| --- | --- |
+| `Summary Type` | `Overall` for the full workflow or `Schedule` for an individual schedule |
+| `Schedule Name` | Schedule name or `All Schedules` for the overall row |
+| `Schedule ID` | Leapwork schedule ID for schedule rows |
+| `Triggered Schedules Count` | Total number of triggered schedules, populated on the overall row |
+| `Flow Count` | Number of completed flow results captured |
+| `Passed Flow Count` | Number of flow rows classified as passed |
+| `Failed Flow Count` | Number of flow rows classified as failed |
+| `Schedule Duration Seconds` | Time spent processing an individual schedule |
+| `Overall Duration Seconds` | End-to-end Leapwork action completion time |
+
+Example:
+
+```csv
+Summary Type,Schedule Name,Schedule ID,Triggered Schedules Count,Flow Count,Passed Flow Count,Failed Flow Count,Schedule Duration Seconds,Overall Duration Seconds
+Overall,All Schedules,,3,18,16,2,,254.42
+Schedule,Smoke Suite,12345,,6,6,0,72.15,
+Schedule,Regression Suite,67890,,8,6,2,121.84,
+Schedule,Sanity Suite,24680,,4,4,0,60.43,
+```
+
+## Workflow Runtime
+
+The artifact upload step uses `actions/upload-artifact@v7`, which aligns the workflow with GitHub's newer Node.js runtime support and avoids the deprecated Node.js 20 warning shown for older artifact action versions.
 
 ## Troubleshooting
 
